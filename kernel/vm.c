@@ -305,6 +305,36 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+void freepagetable_helper(pagetable_t pagetable, int depth)
+{
+  if (depth < 2){
+    for(int i = 0; i < 512; i++){
+      pte_t pte = pagetable[i];
+      // printf("processing pte %p\n", pte);
+      // printf("pte %p, depth %d, i");
+      if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        uint64 child = PTE2PA(pte);
+        // printf("freeing pte %p\n")
+        freepagetable_helper((pagetable_t)child, depth + 1);
+        pagetable[i] = 0;
+      } else if(pte & PTE_V){
+        panic("freepagetable_helper: leaf");
+      }
+    }
+  }
+  // printf("Freeing pagetable at address %p\n", pagetable);
+  kfree((void*)pagetable);
+}
+
+// Recursively free page-table pages.
+// No leaf mappings are removed.
+void
+freerootpagetable(pagetable_t root_pagetable)
+{
+  freepagetable_helper(root_pagetable, 0);
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
