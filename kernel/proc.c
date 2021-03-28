@@ -149,6 +149,15 @@ found:
     return 0;
   }
 
+  // A copy of the kernel page table
+  p->kernel_pagetable = (pagetable_t) kalloc();
+  populate_kernel_pagetable(p->kernel_pagetable);
+  map_kstack(p);
+  // printf("Printing kernel pagetable");
+  // vmprint(kernel_pagetable);
+  // printf("printing process kernel pagetable");
+  // vmprint(p->kernel_pagetable);
+  
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
