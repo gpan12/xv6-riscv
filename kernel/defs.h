@@ -180,7 +180,16 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t);
-void            vmprint_helper(pagetable_t pagetable, int level);
+void            vmprint_helper(pagetable_t, int);
+void            populate_kernel_pagetable(pagetable_t);
+void            kvmmap_general(pagetable_t, uint64, uint64, uint64, int);
+void            freerootpagetable(pagetable_t);
+extern pagetable_t     kernel_pagetable;
+pte_t *         walk(pagetable_t, uint64, int);
+
+// vmcopyin.c
+int             copyin_new(pagetable_t, char *, uint64, uint64);
+
 
 // plic.c
 void            plicinit(void);
