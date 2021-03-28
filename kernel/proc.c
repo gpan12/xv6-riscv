@@ -85,6 +85,34 @@ allocpid() {
   return pid;
 }
 
+void
+map_kstack(struct proc  *p)
+{
+  // char *pa = kalloc();
+  // if(pa == 0)
+  //   panic("kalloc");
+  struct proc *np;
+  for(np = proc; np < &proc[NPROC]; np++) {
+      // /* Moved the functionality to allocproc
+      // Allocate a page for the process's kernel stack.
+      // Map it high in memory, followed by an invalid
+      // guard page.
+      uint64 va = KSTACK((int) (np - proc));
+      pte_t * pte = walk(kernel_pagetable, va, 0);
+      uint64 pa = PTE2PA(*pte);
+      // printf("Maping va %p to pa %p", (void *)va, (void *)pa);
+      kvmmap_general(p->kernel_pagetable, va, pa, PGSIZE, PTE_R | PTE_W);
+      // */
+  }
+//   uint64 va = KSTACK((int) (p - proc));
+//   // uint64 pa = walkaddr(kernel_pagetable, va);
+//   pte_t * pte = walk(kernel_pagetable, va, 0);
+//   uint64 pa = PTE2PA(*pte);
+//   // printf("Maping va %p to pa %p", (void *)va, (void *)pa);
+//   kvmmap_general(p->kernel_pagetable, va, pa, PGSIZE, PTE_R | PTE_W);
+//   // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  }
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
