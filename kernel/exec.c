@@ -19,6 +19,7 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
+  pagetable_t new_kernel_pagetable = 0;
   struct proc *p = myproc();
 
   begin_op();
@@ -38,6 +39,14 @@ exec(char *path, char **argv)
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
+  new_kernel_pagetable = (pagetable_t) kalloc();
+  if (new_kernel_pagetable == 0)
+    goto bad;
+  // printf("Populating from exec\n");
+  populate_kernel_pagetable(new_kernel_pagetable);
+  // printf("Mapping kstack\n");
+  map_kstack(new_kernel_pagetable);
+
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
@@ -49,7 +58,7 @@ exec(char *path, char **argv)
     if(ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+    if((sz1 = uvmalloc(pagetable, new_kernel_pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
@@ -68,7 +77,7 @@ exec(char *path, char **argv)
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
   uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
+  if((sz1 = uvmalloc(pagetable, new_kernel_pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
   uvmclear(pagetable, sz-2*PGSIZE);
@@ -116,6 +125,11 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  w_satp(MAKE_SATP(new_kernel_pagetable));
+  sfence_vma();
+  freerootpagetable(p->kernel_pagetable);
+  p->kernel_pagetable = new_kernel_pagetable;
+
   if (p->pid == 1){
     vmprint(p->pagetable);
   }
@@ -125,6 +139,9 @@ exec(char *path, char **argv)
  bad:
   if(pagetable)
     proc_freepagetable(pagetable, sz);
+  if(new_kernel_pagetable){
+    freerootpagetable(new_kernel_pagetable);
+  }
   if(ip){
     iunlockput(ip);
     end_op();

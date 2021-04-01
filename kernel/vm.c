@@ -6,6 +6,11 @@
 #include "defs.h"
 #include "fs.h"
 
+#include "param.h"
+#include "spinlock.h"
+#include "proc.h"
+
+
 /*
  * the kernel's page table.
  */
@@ -133,8 +138,9 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 void
 kvmmap_general(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  if(mappages(pagetable, va, sz, pa, perm) != 0)
+  if(mappages(pagetable, va, sz, pa, perm) != 0){
     panic("kvmmap");
+  }
 }
 
 // translate a kernel virtual address to
@@ -227,7 +233,7 @@ uvmcreate()
 // for the very first process.
 // sz must be less than a page.
 void
-uvminit(pagetable_t pagetable, uchar *src, uint sz)
+uvminit(pagetable_t pagetable, pagetable_t proc_kernel_pagetable, uchar *src, uint sz)
 {
   char *mem;
 
@@ -236,16 +242,21 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
   mem = kalloc();
   memset(mem, 0, PGSIZE);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+  mappages(proc_kernel_pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X);
   memmove(mem, src, sz);
 }
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+uvmalloc(pagetable_t pagetable, pagetable_t proc_kernel_pagetable, uint64 oldsz, uint64 newsz)
 {
   char *mem;
   uint64 a;
+
+  // struct proc *p = myproc();
+  // int pid = p->pid;
+  // printf("Uvmalloc pip %d\n", pid);
 
   if(newsz < oldsz)
     return oldsz;
@@ -254,13 +265,14 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   for(a = oldsz; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(pagetable, proc_kernel_pagetable, a, oldsz);
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0 ||
+      (mappages(proc_kernel_pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R) != 0)){
       kfree(mem);
-      uvmdealloc(pagetable, a, oldsz);
+      uvmdealloc(pagetable, proc_kernel_pagetable, a, oldsz);
       return 0;
     }
   }
@@ -272,7 +284,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 // need to be less than oldsz.  oldsz can be larger than the actual
 // process size.  Returns the new process size.
 uint64
-uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+uvmdealloc(pagetable_t pagetable, pagetable_t proc_kernel_pagetable, uint64 oldsz, uint64 newsz)
 {
   if(newsz >= oldsz)
     return oldsz;
@@ -280,6 +292,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    uvmunmap(proc_kernel_pagetable, PGROUNDUP(newsz), npages, 0);
   }
 
   return newsz;
@@ -315,7 +328,7 @@ void freepagetable_helper(pagetable_t pagetable, int depth)
       if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
         // this PTE points to a lower-level page table.
         uint64 child = PTE2PA(pte);
-        // printf("freeing pte %p\n")
+        // printf("freeing pte %p\n", pte);
         freepagetable_helper((pagetable_t)child, depth + 1);
         pagetable[i] = 0;
       } else if(pte & PTE_V){
@@ -332,6 +345,7 @@ void freepagetable_helper(pagetable_t pagetable, int depth)
 void
 freerootpagetable(pagetable_t root_pagetable)
 {
+  // printf("Call to freerootpagetable at address %p\n", (void *)root_pagetable);
   freepagetable_helper(root_pagetable, 0);
 }
 
@@ -352,7 +366,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopy(pagetable_t old, pagetable_t new, pagetable_t new_kernel, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
@@ -369,7 +383,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0 ||
+      (mappages(new_kernel, i, PGSIZE, (uint64)mem, flags & ~PTE_U) != 0)){
       kfree(mem);
       goto err;
     }
@@ -425,7 +440,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  // struct proc *p = myproc();
+  // printf("Address of process' kernel pagetable %p\n", (void *)p->kernel_pagetable);
+  // uint64 satp = r_satp();
+  // printf("Satp point to address %p\n", satp);
+
+
+  return copyin_new(pagetable, dst, srcva, len);
   uint64 n, va0, pa0;
+  
+  // va0 = PGROUNDDOWN(srcva);
+  // pa0 = walkaddr(pagetable, va0);
+  // printf("PID %d, srcva %p, va0 %p\n", p->pid, srcva, va0);
+  // printf("Physical address in the process' user pagetable %p\n", pa0);
+
+  // pte_t *pte = walk(p->kernel_pagetable, va0, 0);
+  // uint64 pa = PTE2PA(*pte);
+  // printf("Physical address in the process' kernel pagetable %p\n", pa);
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
@@ -451,6 +482,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  return copyinstr_new(pagetable, dst, srcva, max);
   uint64 n, va0, pa0;
   int got_null = 0;
 

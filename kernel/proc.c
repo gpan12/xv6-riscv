@@ -86,7 +86,7 @@ allocpid() {
 }
 
 void
-map_kstack(struct proc  *p)
+map_kstack(pagetable_t pagetable)
 {
   // char *pa = kalloc();
   // if(pa == 0)
@@ -98,10 +98,12 @@ map_kstack(struct proc  *p)
       // Map it high in memory, followed by an invalid
       // guard page.
       uint64 va = KSTACK((int) (np - proc));
-      pte_t * pte = walk(kernel_pagetable, va, 0);
+      pte_t *pte = walk(kernel_pagetable, va, 0);
+      if (pte == 0)
+        panic("map_kstack failed");
       uint64 pa = PTE2PA(*pte);
       // printf("Maping va %p to pa %p", (void *)va, (void *)pa);
-      kvmmap_general(p->kernel_pagetable, va, pa, PGSIZE, PTE_R | PTE_W);
+      kvmmap_general(pagetable, va, pa, PGSIZE, PTE_R | PTE_W);
       // */
   }
 //   uint64 va = KSTACK((int) (p - proc));
@@ -151,8 +153,13 @@ found:
 
   // A copy of the kernel page table
   p->kernel_pagetable = (pagetable_t) kalloc();
+  if (p->kernel_pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
   populate_kernel_pagetable(p->kernel_pagetable);
-  map_kstack(p);
+  map_kstack(p->kernel_pagetable);
   // printf("Printing kernel pagetable");
   // vmprint(kernel_pagetable);
   // printf("printing process kernel pagetable");
@@ -173,6 +180,9 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  // printf("Printing process %d kernerl pagetable\n", p->pid);
+  // vmprint(p->kernel_pagetable);
+
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
@@ -257,8 +267,17 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  uvminit(p->pagetable, p->kernel_pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+
+  // uint64 va0 = 0;
+  // uint64 pa0 = walkaddr(p->pagetable, va0);
+  // printf("PID %d, va0 %p\n", p->pid, va0);
+  // printf("Physical address in the process' user pagetable %p\n", pa0);
+
+  // pte_t *pte = walk(p->kernel_pagetable, va0, 0);
+  // uint64 pa = PTE2PA(*pte);
+  // printf("Physical address in the process' kernel pagetable %p\n", pa);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -282,11 +301,15 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if (sz + n > CLINT){
+      printf("process memory cannot go above CLINT\n");
+      return -1;
+    }
+    if((sz = uvmalloc(p->pagetable, p->kernel_pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, p->kernel_pagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -307,11 +330,30 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, np->kernel_pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+
+  // uint64 va0 = 0;
+  // uint64 pa0 = walkaddr(np->pagetable, va0);
+  // printf("PID %d, va0 %p\n", np->pid, va0);
+  // printf("Physical address in the process' user pagetable %p\n", pa0);
+
+  // pte_t *pte = walk(np->kernel_pagetable, va0, 0);
+  // uint64 pa = PTE2PA(*pte);
+  // printf("Physical address in the process' kernel pagetable %p\n", pa);
+
+  // va0 = 0;
+  // pa0 = walkaddr(p->pagetable, va0);
+  // printf("PID %d, va0 %p\n", p->pid, va0);
+  // printf("Physical address in the process' user pagetable %p\n", pa0);
+
+  // pte = walk(p->kernel_pagetable, va0, 0);
+  // pa = PTE2PA(*pte);
+  // printf("Physical address in the process' kernel pagetable %p\n", pa);
+
   np->sz = p->sz;
 
   np->parent = p;
@@ -560,6 +602,8 @@ sched(void)
     panic("sched interruptible");
 
   intena = mycpu()->intena;
+  w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
 }
