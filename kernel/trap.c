@@ -10,6 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern struct proc proc[NPROC];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -77,8 +78,63 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2) {
+    struct proc *np;  
+    for(np = proc; np < &proc[NPROC]; np++){
+      // printf("%p has alarm %d\n", np, np->has_alarm);
+      if (!(np->has_alarm))
+        continue;
+      if (np->alarm_executing)
+        continue;
+      if (np->ticks_left != 0) {
+        np->ticks_left--;
+        continue;
+      }
+      // printf("Modifying trapframe\n");
+      // save current registers
+
+      // printf("%p\n", np->trapframe->a0);
+      // printf("%p\n", np->alarm_trapframe->a0);
+
+      np->alarm_trapframe->a0 = np->trapframe->a0;
+      np->alarm_trapframe->a1 = np->trapframe->a1;
+      np->alarm_trapframe->a2 = np->trapframe->a2;
+      np->alarm_trapframe->a3 = np->trapframe->a3;
+      np->alarm_trapframe->a4 = np->trapframe->a4;
+      np->alarm_trapframe->a5 = np->trapframe->a5;
+      np->alarm_trapframe->a6 = np->trapframe->a6;
+      np->alarm_trapframe->a7 = np->trapframe->a7;
+      np->alarm_trapframe->t0 = np->trapframe->t0;
+      np->alarm_trapframe->t1 = np->trapframe->t1;
+      np->alarm_trapframe->t2 = np->trapframe->t2;
+      np->alarm_trapframe->t3 = np->trapframe->t3;
+      np->alarm_trapframe->t4 = np->trapframe->t4;
+      np->alarm_trapframe->t5 = np->trapframe->t5;
+      np->alarm_trapframe->t6 = np->trapframe->t6;
+      np->alarm_trapframe->s0 = np->trapframe->s0;
+      np->alarm_trapframe->s1 = np->trapframe->s1;
+      np->alarm_trapframe->s2 = np->trapframe->s2;
+      np->alarm_trapframe->s3 = np->trapframe->s3;
+      np->alarm_trapframe->s4 = np->trapframe->s4;
+      np->alarm_trapframe->s5 = np->trapframe->s5;
+      np->alarm_trapframe->s6 = np->trapframe->s6;
+      np->alarm_trapframe->s7 = np->trapframe->s7;
+      np->alarm_trapframe->s8 = np->trapframe->s8;
+      np->alarm_trapframe->s9 = np->trapframe->s9;
+      np->alarm_trapframe->s10 = np->trapframe->s10;
+      np->alarm_trapframe->s11 = np->trapframe->s11;
+      np->alarm_trapframe->epc = np->trapframe->epc;
+      np->alarm_trapframe->ra = np->trapframe->ra;
+      np->alarm_trapframe->sp = np->trapframe->sp;
+      np->alarm_trapframe->gp = np->trapframe->gp;
+      np->alarm_trapframe->tp = np->trapframe->tp;
+
+      np->alarm_executing = 1;
+
+      np->trapframe->epc = (uint64) np->alarm_handler;
+    }
     yield();
+  }
 
   usertrapret();
 }
