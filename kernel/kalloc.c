@@ -14,6 +14,8 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+int pgrefcount[NUMOFPAGES];
+
 struct run {
   struct run *next;
 };
@@ -23,10 +25,20 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct spinlock pgrefcount_lock;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&pgrefcount_lock, "pgrefcount_lock");
+  
+  acquire(&pgrefcount_lock);
+  for(int i = 0; i < NUMOFPAGES; i++){
+    // printf("%d\n", i);    
+    pgrefcount[i] = 1;
+  }
+  release(&pgrefcount_lock);
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -37,6 +49,22 @@ freerange(void *pa_start, void *pa_end)
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
+}
+
+int
+getpgno(void *pa){
+  int pageno = ((char *)pa - end) / PGSIZE;
+  return pageno;
+}
+
+int
+increase_pgrefcount(void *pa, int incr){
+  int pageno = getpgno(pa);
+  acquire(&pgrefcount_lock);
+  pgrefcount[pageno] += incr;
+  int count = pgrefcount[pageno];
+  release(&pgrefcount_lock);
+  return count;
 }
 
 // Free the page of physical memory pointed at by v,
@@ -50,6 +78,21 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  // int pgno = getpgno(pa);
+  // if (pgno == 32556){
+  //   printf("Decrementing %d with ref count %d\n", pgno, pgrefcount[pgno]);
+  // }
+
+  int refcount = increase_pgrefcount(pa, -1);
+
+  if (refcount < 0){
+    printf("page no: %d, ref count: %d\n", getpgno(pa), refcount);
+    panic("Negative pg reference count!\n");
+  }
+  if (refcount > 0){
+    return;
+  }
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -76,7 +119,10 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r) {
     memset((char*)r, 5, PGSIZE); // fill with junk
+    increase_pgrefcount((void *)r, 1);
+  }
+
   return (void*)r;
 }

@@ -65,14 +65,58 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+    // store page fault
+
+    uint64 stval = r_stval();
+    pte_t *pte;
+    uint64 pa;
+    uint flags;
+    if((pte = walk(p->pagetable, stval, 0)) == 0) {
+      goto ERRORCASE;
+    }
+    if((*pte & PTE_V) == 0) {
+      goto ERRORCASE;
+    }
+    if (!(*pte & PTE_COW)) {
+      goto ERRORCASE;
+    }
+    // printf("Write page fault on COW page\n");
+
+    pa = PTE2PA(*pte);
+
+    int refcount = increase_pgrefcount((void *)pa, 0);
+    if (refcount == 1) {
+      *pte |= PTE_W;
+      *pte &= ~PTE_COW;
+      goto SCAUSEEND;
+    } else if (refcount < 1) {
+      panic("trap.c wrong refcount\n");
+    }
+
+    flags = PTE_FLAGS(*pte);
+    flags |= PTE_W;
+    flags &= ~PTE_COW;
+    char *mem;
+    if((mem = kalloc()) == 0){
+      goto ERRORCASE;
+    } 
+    memmove(mem, (char*)pa, PGSIZE);
+    uvmunmap(p->pagetable, PGROUNDDOWN(stval), 1, 1);
+    if (mappages(p->pagetable, PGROUNDDOWN(stval), PGSIZE, (uint64) mem, flags) != 0) {
+      printf("Error in mappages\n");
+      goto ERRORCASE;
+    }
+    // increase_pgrefcount((void *)pa, -1);
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
+ERRORCASE:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+SCAUSEEND:
   if(p->killed)
     exit(-1);
 

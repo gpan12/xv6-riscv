@@ -65,3 +65,7 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+extern char end[];
+// #define NUMOFPAGES (int)(((char *)PHYSTOP - end) / PGSIZE)
+#define NUMOFPAGES 32730

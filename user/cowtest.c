@@ -25,16 +25,21 @@ simpletest()
 
   for(char *q = p; q < p + sz; q += 4096){
     *(int*)q = getpid();
+    // printf("Simple test pid %d %d %d\n", q, p, sz);
+    // printf("Simple test pid %d\n", p + sz);
   }
+  // printf("Simple Test Loop done\n");
 
   int pid = fork();
   if(pid < 0){
     printf("fork() failed\n");
     exit(-1);
   }
-
-  if(pid == 0)
+  // printf("%d\n", pid);
+  if(pid == 0){
+    printf("Exiting from child\n");
     exit(0);
+  }
 
   wait(0);
 

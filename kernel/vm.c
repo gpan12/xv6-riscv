@@ -311,28 +311,75 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+    if((pte = walk(old, i, 0)) == 0) {
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+    }
+    if((*pte & PTE_V) == 0) {
       panic("uvmcopy: page not present");
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if (flags & PTE_W) {
+      flags &= ~PTE_W;
+    }
+    if (!(flags & PTE_COW)) {
+      flags |= PTE_COW;
+    }
+
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      panic("uvmcopy: mappages fault");
       goto err;
     }
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW;
+    increase_pgrefcount((void *)pa, 1);
   }
   return 0;
 
- err:
+err:
+  printf("In error case of uvmcopy\n");
   uvmunmap(new, 0, i / PGSIZE, 1);
+  uint64 j;
+  for (j = 0; j < i; j += PGSIZE) {
+    if((pte = walk(old, i, 0)) == 0)
+      panic("uvmcopy: pte should exist");
+    *pte &= ~PTE_COW;
+    *pte |= PTE_W;
+    pa = PTE2PA(*pte);
+    // increase_pgrefcount((void *)pa, -1);
+  }
   return -1;
+}
+
+void
+vmprint_helper(pagetable_t pagetable, int level)
+{
+  char prefixes[][10] = {
+    "..",
+    ".. ..",
+    ".. .. ..",
+  };
+  for (int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if (!(pte & PTE_V)){
+      continue;
+    }
+    printf(prefixes[level]);
+    printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+    if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      uint64 child = PTE2PA(pte);
+      vmprint_helper((pagetable_t)child, level + 1);
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_helper(pagetable, 0);
 }
 
 // mark a PTE invalid for user access.
@@ -355,12 +402,50 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
+  int refcount;
+  uint flags;
+  char *mem;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (va0 > MAXVA) {
       return -1;
+    }
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
+    if (*pte & PTE_COW) {
+      refcount = increase_pgrefcount((void *)pa0, 0);
+      if (refcount == 1) {
+        *pte |= PTE_W;
+        *pte &= ~PTE_COW;
+        goto COWDONE;
+      } else if (refcount < 1) {
+        panic("copyout wrong refcount\n");
+      }
+      flags = PTE_FLAGS(*pte);
+      flags |= PTE_W;
+      flags &= ~PTE_COW;
+      
+      if((mem = kalloc()) == 0){
+         printf("Error in copyout kalloc\n");
+        return -1;
+      }
+      memmove(mem, (char*)pa0, PGSIZE);
+      uvmunmap(pagetable, va0, 1, 1);
+      if (mappages(pagetable, va0, PGSIZE, (uint64) mem, flags) != 0) {
+        printf("Error in copyout mappages\n");
+        return -1;
+      }
+      pa0 = (uint64)mem;
+    }
+COWDONE:
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
