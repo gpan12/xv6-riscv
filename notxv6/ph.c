@@ -17,6 +17,9 @@ struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
 
+pthread_mutex_t glock;
+pthread_mutex_t blocks[NBUCKET];
+
 double
 now()
 {
@@ -31,14 +34,18 @@ insert(int key, int value, struct entry **p, struct entry *n)
   struct entry *e = malloc(sizeof(struct entry));
   e->key = key;
   e->value = value;
+  
   e->next = n;
   *p = e;
+  
 }
 
 static 
 void put(int key, int value)
 {
   int i = key % NBUCKET;
+
+  pthread_mutex_lock(&blocks[i]);
 
   // is the key already present?
   struct entry *e = 0;
@@ -53,6 +60,8 @@ void put(int key, int value)
     // the new is new.
     insert(key, value, &table[i], table[i]);
   }
+
+  pthread_mutex_unlock(&blocks[i]);
 }
 
 static struct entry*
@@ -76,7 +85,9 @@ put_thread(void *xa)
   int b = NKEYS/nthread;
 
   for (int i = 0; i < b; i++) {
+    
     put(keys[b*n + i], n);
+    
   }
 
   return NULL;
@@ -115,6 +126,15 @@ main(int argc, char *argv[])
     keys[i] = random();
   }
 
+  pthread_mutex_init(&glock, NULL);
+  for (int i = 0; i < NBUCKET; i++) {
+    pthread_mutex_init(&blocks[i], NULL);
+  }
+  // if (pthread_mutex_init(glock, NULL) != 0) {
+  //   printf("mutex init failed\n");
+  //   exit(-1);
+  // }
+
   //
   // first the puts
   //
@@ -144,4 +164,6 @@ main(int argc, char *argv[])
 
   printf("%d gets, %.3f seconds, %.0f gets/second\n",
          NKEYS*nthread, t1 - t0, (NKEYS*nthread) / (t1 - t0));
+
+  pthread_mutex_destroy(&glock);
 }
